@@ -1,0 +1,28 @@
+%         Plot voltage vs. current
+    figure;
+    plot(voltages, currents*1e9, 'o');
+    xlabel('Voltage (V)');
+    ylabel('Current (nA)');
+    title('IV Curve'); 
+    grid on;
+% 
+    % Fit a line to the specified number of points centered on V = 0
+    idx_center = find(voltages >= -step_size/2 & voltages <= step_size/2); % Find indices around V = 0
+    coeffs = polyfit(voltages(idx_center - N_points_fit/2:idx_center + N_points_fit/2), currents(idx_center - N_points_fit/2:idx_center + N_points_fit/2), 1);
+    slope = coeffs(1);
+    intercept = coeffs(2);
+    
+    % Calculate resistance
+    resistance = 1 / slope;
+    fprintf('Resistance = %.2E', resistance);
+    
+    % Plot the fitted line
+    hold on;
+    fitted_line = polyval(coeffs, voltages);
+    plot(voltages, fitted_line*1e9, 'r-');
+    legend('Data', 'Fitted Line', 'Location', 'northwest');
+    hold off;
+    
+    % Display resistance on the plot
+    text(0, min(currents*1e9)/2, sprintf('Resistance: %.2f GOhms', resistance/1e9), 'Color', 'red');
+    hold off;
