@@ -1,0 +1,962 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Nov 18 11:18:07 2024
+
+@author: yhu
+"""
+
+import glob
+
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import h5py 
+from scipy import signal
+from skimage.morphology import dilation, square
+
+import cv2
+from skimage import feature
+from skimage import filters
+from scipy.ndimage import label
+
+if __name__ == "__main__":
+    os.chdir(os.path.split(os.path.dirname(__file__))[0])
+    
+from roselle import roselle
+from roselle.analysis import *
+from scipy.stats import pearsonr
+
+plt.rcParams.update(plt.rcParamsDefault)
+
+
+
+r = roselle()
+
+allimages={}
+r_offsets={}
+c_offsets={}
+sizing={}
+title={}
+
+logdir = r"G:/roselle/Mammalian_cells/Sensor_data/June_6_2025/June_6_2025"
+lognames = glob.glob(os.path.join(logdir,
+                                  r'MDA_MB_231_on_collagen_mask on.h5'))
+
+for logname in lognames:
+    print_summary(logname,
+                  # attrs='none')
+                   # attrs='all') 
+                   attrs=['comments'])
+
+for logname in lognames:
+    list_cap_data = get_list(logname,
+                                # filterstring = 'Cap_',
+                              sortby='time')
+
+print('Begin analyzing data')
+
+
+for mydataset in list_cap_data:
+    
+    Cimage = get_data(logname, mydataset, dataname='Cimage')
+    scanvals = get_data(logname, mydataset, dataname='scanvals')
+    myproperties = get_all_attrs(logname, mydataset)
+    r.pset_dict(myproperties)  # copy saved properties into roselle object
+    
+
+    allimages[mydataset] = Cimage
+    
+    r_offsets[mydataset]=r.pget('r_offset')
+    c_offsets[mydataset]=r.pget('c_offset')
+    sizing[mydataset]=r.pget('sizing')
+        
+    if 'Cap_' in mydataset:
+        title[mydataset] = '%s\n%s\nneighbors=%u' % (mydataset,
+                                            r.pget('comments'),
+                                            r.pget('neighboring pixels'))
+        
+        if 0: # plot cap images
+            plt.figure(figsize=(8,8))
+            plot_capacitance_image(plt,     # where to plot
+                                    allimages[mydataset][10:720,200:1000],  # image (fF)
+                                    title=title[mydataset], # title
+                                    color_stds=(3,3),)
+            plt.show()
+            
+
+    if 'Virtual_Pixel_images_' in mydataset:
+        title[mydataset] = '%s \n (row,col)=(%u,%u) Sizing=%u' % (mydataset,
+                                                      r_offsets[mydataset],
+                                                      c_offsets[mydataset],
+                                                      sizing[mydataset])
+        plt.figure(figsize=(8,8))
+        plot_capacitance_image(plt,     # where to plot
+                                allimages[mydataset],  # image (fF)
+                                title=title[mydataset], # title
+                                color_stds=(1,3),)
+        plt.show()
+    
+
+# ------------------------- sizing is the variable for plot -----------------------
+def plot_virtual_pixel_Cm_sizing(degree,offset_scale,hist_xlim,r_start=0,r_end=1023,c_start=0,c_end=1023):
+    
+    if degree == 0: # col offsets
+        count_col = 0
+        for mydataset in list_cap_data:
+                if r_offsets[mydataset] == 0:   # select col offsets
+                    if c_offsets[mydataset] == offset_scale * sizing[mydataset]:
+                        count_col = count_col + 1
+
+        count = 0
+        plt.figure(figsize=(16,16))
+        for mydataset in list_cap_data:
+            if r_offsets[mydataset] == 0:   # select col offsets
+                if c_offsets[mydataset] == offset_scale * sizing[mydataset]:
+                    count = count + 1
+                    if count_col % 3 == 0:
+                        plt.subplot(int(count_col/3),3,count)
+                    else:
+                        plt.subplot(int(count_col/3+1),3,count)
+                    plot_capacitance_image(plt,     # where to plot
+                                           allimages[mydataset][r_start:r_end,c_start:c_end],  # image (fF)
+                                           title=title[mydataset], # title
+                                           color_stds=(6,6),) # std color ranges (vmin,vmax)
+        plt.show()
+                        
+        count = 0
+        plt.figure(figsize=(20,10))
+        for j,mydataset in enumerate(list_cap_data):
+            
+            if r_offsets[mydataset] == 0:   # col offsets
+        
+                if c_offsets[mydataset] == offset_scale * sizing[mydataset]:  # offsets = 1*size cases
+                    count = count + 1
+                    mytitle = '%s || (row,col)=(%u,%u) Sizing=%u' % (mydataset,
+                                                                  r_offsets[mydataset],
+                                                                  c_offsets[mydataset],
+                                                                  sizing[mydataset])
+                    
+                    plt.subplot(count_col,1,count)
+                    plt.hist(np.ravel(allimages[mydataset]), bins=800)
+                    plt.title(mytitle)
+                    plt.xlim(hist_xlim)
+        
+        plt.show()
+        
+    if degree == 90: # row offsets
+        count_row = 0
+        for j,mydataset in enumerate(list_cap_data):
+                if c_offsets[mydataset] == 0:   # select col offsets
+                    if r_offsets[mydataset] == offset_scale * sizing[mydataset]:
+                        count_row = count_row + 1
+                        
+        count = 0
+        plt.figure(figsize=(16,16))
+        for mydataset in list_cap_data:
+            if r_offsets[mydataset] == 0:   # select col offsets
+                if c_offsets[mydataset] == offset_scale * sizing[mydataset]:
+                    count = count + 1
+                    if count_row % 1 == 0:
+                        plt.subplot(int(count_row+1),1,count)
+                    else:
+                        plt.subplot(int(count_row/1),1,count)
+                    plot_capacitance_image(plt,     # where to plot
+                                           allimages[mydataset][r_start:r_end,c_start:c_end],  # image (fF)
+                                           title=title[mydataset], # title
+                                           color_stds=(6,6),) # std color ranges (vmin,vmax)
+        plt.show()
+                    
+        count = 0
+        plt.figure(figsize=(20,10))
+        for j,mydataset in enumerate(list_cap_data):
+            if c_offsets[mydataset] == 0:   # row offsets
+                if r_offsets[mydataset] == offset_scale * sizing[mydataset]:  # offsets = 1*size cases
+                    count = count + 1
+                    mytitle = '%s || (row,col)=(%u,%u) Sizing=%u' % (mydataset,
+                                                                  r_offsets[mydataset],
+                                                                  c_offsets[mydataset],
+                                                                  sizing[mydataset])
+                    
+                    plt.subplot(count_row,1,count)
+                    plt.hist(np.ravel(allimages[mydataset]), bins=800)
+                    plt.title(mytitle)
+                    plt.xlim(hist_xlim)
+        
+        plt.show()
+
+
+# ------------------------- offset scale is the variable for plot -----------------------
+def plot_virtual_pixel_Cm_offset_scale(degree,size,hist_xlim):
+    
+    if degree == 0: # col offsets
+        count_offset = 0
+        for mydataset in analysis_list_1[fname]:
+                if sizing[mydataset] == size:  
+                    if r_offsets[mydataset] == 0: 
+                        count_offset = count_offset + 1
+        
+        count = 0
+        for mydataset in analysis_list_1[fname]:
+                if sizing[mydataset] == size:  
+                    if r_offsets[mydataset] == 0: 
+                        count = count + 1
+                        if count_offset % 2 == 0:
+                            plt.subplot(int(count_offset/2),2,count)
+                        else:
+                            plt.subplot(int(count_offset/2+1),2,count)
+                        plot_capacitance_image(plt,     # where to plot
+                                               allimages[mydataset],  # image (fF)
+                                               title=title[mydataset], # title
+                                               color_stds=(3,3),) # std color ranges (vmin,vmax)
+        plt.show()
+                        
+                        
+        count = 0
+        plt.figure(figsize=(20,10))
+        for j,mydataset in enumerate(analysis_list_1[fname]):
+           if sizing[mydataset] == size: 
+              if r_offsets[mydataset] == 0: 
+                    count = count + 1
+                    mytitle = '%s || (row,col)=(%u,%u) Sizing=%u' % (mydataset,
+                                                                  r_offsets[mydataset],
+                                                                  c_offsets[mydataset],
+                                                                  sizing[mydataset])
+                    
+                    plt.subplot(count_offset,1,count)
+                    plt.hist(np.ravel(allimages[mydataset]), bins=400)
+                    plt.title(mytitle)
+                    plt.xlim(hist_xlim)
+        
+        plt.show()
+
+    if degree == 90: # row offsets
+        count_offset = 0
+        for j,mydataset in enumerate(analysis_list_1[fname]):
+                if sizing[mydataset] == size:  
+                    if c_offsets[mydataset] == 0: 
+                        count_offset = count_offset + 1
+                        
+        count = 0
+        for mydataset in analysis_list_1[fname]:
+                if sizing[mydataset] == size:  
+                    if r_offsets[mydataset] == 0: 
+                        count = count + 1
+                        if count_offset % 2 == 0:
+                            plt.subplot(int(count_offset/2),2,count)
+                        else:
+                            plt.subplot(int(count_offset/2+1),2,count)
+                        plot_capacitance_image(plt,     # where to plot
+                                               allimages[mydataset],  # image (fF)
+                                               title=title[mydataset], # title
+                                               color_stds=(3,3),) # std color ranges (vmin,vmax)
+        plt.show()
+                        
+        count = 0
+        plt.figure(figsize=(20,10))
+        for j,mydataset in enumerate(analysis_list_1[fname]):
+           if sizing[mydataset] == size: 
+              if c_offsets[mydataset] == 0: 
+                    count = count + 1
+                    mytitle = '%s || (row,col)=(%u,%u) Sizing=%u' % (mydataset,
+                                                                  r_offsets[mydataset],
+                                                                  c_offsets[mydataset],
+                                                                  sizing[mydataset])
+                    
+                    plt.subplot(count_offset,1,count)
+                    plt.hist(np.ravel(allimages[mydataset]), bins=400)
+                    plt.title(mytitle)
+                    plt.xlim(hist_xlim)
+        
+        plt.show()
+
+
+# ------------------------- degree is the variable for plot -----------------------
+def plot_virtual_pixel_Cm_degree(offset_scale,size,hist_xlim):
+    
+    count_degree = 0
+    for j,mydataset in enumerate(analysis_list_1[fname]):
+            if sizing[mydataset] == size:  
+                if c_offsets[mydataset] == offset_scale * sizing[mydataset] or r_offsets[mydataset] == offset_scale * sizing[mydataset]:
+                    count_degree = count_degree+1
+     
+    count = 0
+    for j,mydataset in enumerate(analysis_list_1[fname]):
+            if sizing[mydataset] == size:  
+                if c_offsets[mydataset] == offset_scale * sizing[mydataset] or r_offsets[mydataset] == offset_scale * sizing[mydataset]:
+                    count = count + 1
+                    if count_degree % 2 == 0:
+                        plt.subplot(int(count_degree/2),2,count)
+                    else:
+                        plt.subplot(int(count_degree/2+1),2,count)
+                    plot_capacitance_image(plt,     # where to plot
+                                           allimages[mydataset],  # image (fF)
+                                           title=title[mydataset], # title
+                                           color_stds=(3,3),) # std color ranges (vmin,vmax)
+    plt.show()
+                    
+    count = 0
+    plt.figure(figsize=(20,10))
+    for j,mydataset in enumerate(analysis_list_1[fname]):
+       if sizing[mydataset] == size: 
+           if c_offsets[mydataset] == offset_scale * sizing[mydataset] or r_offsets[mydataset] == offset_scale * sizing[mydataset]:
+                count = count + 1
+                mytitle = '%s || (row,col)=(%u,%u) Sizing=%u' % (mydataset,
+                                                              r_offsets[mydataset],
+                                                              c_offsets[mydataset],
+                                                              sizing[mydataset])
+                
+                plt.subplot(count_degree,1,count)
+                plt.hist(np.ravel(allimages[mydataset]), bins=400)
+                plt.title(mytitle)
+                plt.xlim(hist_xlim)
+    
+    plt.show()
+
+def line_plotting_relative (col_s, col_e, row, y_lim=[0.8,1.2],filt=False):
+    plt.figure(figsize=(15,10))
+    b, a = signal.butter(4, 0.25)
+    for mydataset in analysis_list_1[fname]:
+        if filt:
+            y = signal.filtfilt(b, a, allimages[mydataset][row][col_s:col_e]/np.mean(allimages[mydataset][800:900]), padlen=150)
+            plt.plot(range(col_s,col_e)+2*sizing[mydataset]+r_offsets[mydataset],y,label=title[mydataset])
+        if not filt:
+            plt.plot(range(col_s,col_e)+2*sizing[mydataset]+r_offsets[mydataset],allimages[mydataset][row][col_s:col_e]/np.mean(allimages[mydataset][800:900]),label=title[mydataset])
+    plt.legend()
+    plt.ylim(y_lim)
+    plt.show()
+
+def print_correlation (image1,image2):
+    correlation_matrix = np.corrcoef(image1, image2)
+    correlation = correlation_matrix[0, 1]
+    print(correlation)
+
+def compensate_offset_cropped_dial (mydataset,r_start=0,r_end=1023,c_start=0,c_end=1023):
+    c_offset = int(2.5*sizing[mydataset])+r_offsets[mydataset]
+    r_offset = sizing[mydataset]
+    # Define a structuring element
+    structuring_element = square(1)  # 10x10 square kernel
+    # Apply dilation
+    image = allimages[mydataset][r_start-r_offset:r_end-r_offset,c_start-c_offset:c_end-c_offset]
+    dilated_image = dilation(image, structuring_element)
+    return  dilated_image
+    
+def extract_region (image):
+    
+    threshold = filters.threshold_otsu(image)
+    binary = image > threshold
+    # Step 2: Masking
+    low_region = np.where(binary == 0, image, 0)
+    high_region = np.where(binary == 1, image, 0)
+    
+    # Visualization
+    fig, axes = plt.subplots(1, 3, figsize=(12, 6))
+    axes[0, 0].imshow(image)
+    axes[0, 0].set_title('Image')
+    axes[0, 1].imshow(low_region1)
+    axes[0, 1].set_title('Biofilm')
+    axes[0, 2].imshow(high_region1)
+    axes[0, 2].set_title('medium')
+
+    plt.tight_layout()
+    plt.show()
+    
+
+def line_fit(x,y,mydataset1,mydataset2):
+    
+    mask = ~((x >= 0) & (x <= 20)) # remove outliers in size = 1
+    x = x[mask]
+    y = y[mask]
+    
+    plt.figure(figsize=(8,8))
+    coefficients = np.polyfit(x, y, 1)
+    polynomial = np.poly1d(coefficients)
+    y_fit = polynomial(x)
+    
+    # Calculate R-squared
+    y_mean = np.mean(y)
+    ss_tot = np.sum((y - y_mean) ** 2)
+    ss_res = np.sum((y - y_fit) ** 2)
+    r = np.sqrt(1 - (ss_res / ss_tot))
+    
+    # Equation of the line
+    equation = f'y = {coefficients[0]:.2f}x + {coefficients[1]:.2f}'
+
+    plt.scatter(x, y, alpha=0.5, color='blue', label='Data points')
+    plt.plot(x, y_fit, color='red', label='Fitted line')
+    plt.xlabel(title[mydataset1])
+    plt.ylabel(title[mydataset2])
+    plt.legend()
+    plt.text(0.1, 0.9, equation, transform=plt.gca().transAxes, fontsize=12, color='red')
+    plt.text(0.1, 0.85, f'R = {r:.2f}', transform=plt.gca().transAxes, fontsize=12, color='red')
+    plt.show()
+
+def plot_region_image(image, region):
+    new_image = np.zeros_like(image)
+    for i in range(len(region)):
+        new_image[region[i][0]][region[i][1]] = image[region[i][0]][region[i][1]]
+    plt.figure(figsize=(6,6))
+    plot_capacitance_image(plt,     # where to plot
+                           new_image,  # image (fF)
+                           title='', # title
+                           color_stds=(0,2),) # std color ranges (vmin,vmax)
+    plt.show()
+    
+
+    
+def image_correlation_plotting (mydataset1,mydataset2,image1,image2,region1,region2,heatmap=False):
+# def image_corresponding_plotting_relative (mydataset1,mydataset2,region,color='blue'):
+    
+    image1_ravel1=[0]*len(region1)
+    image2_ravel1=[0]*len(region1)
+    
+    image1_ravel2=[0]*len(region2)
+    image2_ravel2=[0]*len(region2)
+
+    for i in range(len(region1)):
+        image1_ravel1[i]=image1[region1[i][0]][region1[i][1]]
+        image2_ravel1[i]=image2[region1[i][0]][region1[i][1]]
+    
+    for i in range(len(region2)):
+        image1_ravel2[i]=image1[region2[i][0]][region2[i][1]]
+        image2_ravel2[i]=image2[region2[i][0]][region2[i][1]]
+    
+    combined_image1_ravel = np.concatenate((image1_ravel1, image1_ravel2))
+    combined_image2_ravel = np.concatenate((image2_ravel1, image2_ravel2))
+    
+    line_fit(combined_image1_ravel,combined_image2_ravel,mydataset1,mydataset2)
+    
+    if heatmap:
+        plt.figure(figsize=(8,8))
+        plt.hist2d(combined_image1_ravel,combined_image2_ravel,bins=120,cmap='plasma')
+        plt.show()
+
+def extract_regions_with_otsu(image, texture):
+    """
+    Extract two regions based on texture variance and original image pixel values:
+    1. Low variance and low pixel values
+    2. High variance and high pixel values
+
+    Parameters:
+        image (numpy.ndarray): Original grayscale image.
+        texture (numpy.ndarray): Texture map (e.g., LBP or gradient variance).
+
+    Returns:
+        low_variance_region (numpy.ndarray): Low variance and low value region.
+        high_variance_region (numpy.ndarray): High variance and high value region.
+    """
+    # Step 1: Compute gradient variance (local texture measure)
+    kernel = np.ones((5, 5), dtype=np.float32) / 25  # Small kernel for local neighborhood
+    local_mean = cv2.filter2D(texture, -1, kernel)
+    local_variance = cv2.filter2D((texture - local_mean) ** 2, -1, kernel)
+
+    # Step 2: Calculate the threshold for texture variance (Otsu's threshold)
+    _, variance_thresholded = cv2.threshold(local_variance, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Step 3: Threshold original image to find high and low pixel value regions (Otsu's threshold)
+    _, image_thresholded = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Step 4: Extract low variance or low value region
+    low_variance_region = np.where((variance_thresholded == 0) | (image_thresholded == 0), image, 0)
+
+    # Step 5: Extract high variance or high value region
+    high_variance_region = np.where((variance_thresholded == 255) | (image_thresholded == 255), image, 0)
+
+    return low_variance_region, high_variance_region
+
+def calculate_histogram_correlation(hist1, hist2):
+    """
+    Calculate histogram correlation using normalized cross-correlation.
+
+    Parameters:
+        hist1 (numpy.ndarray): Histogram of the first image.
+        hist2 (numpy.ndarray): Histogram of the second image.
+
+    Returns:
+        correlation (float): The correlation coefficient between the two histograms.
+    """
+    correlation = np.corrcoef(hist1, hist2)[0, 1]
+    return correlation
+
+def analyze_images_advanced(image1, image2, mydataset1, mydataset2):
+    """
+    Analyze two images using advanced features like texture, and histogram distributions.
+    Includes normalization and denoising before correlation analysis.
+
+    Parameters:
+        image1 (numpy.ndarray): First input image (reference for masking).
+        image2 (numpy.ndarray): Second input image (to be mapped using the first image's masks).
+
+    Returns:
+        None
+    """
+    # Step 0: Preprocessing (Normalization and Denoising)
+    image1 = cv2.normalize(image1, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    image2 = cv2.normalize(image2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    image1 = cv2.GaussianBlur(image1, (3, 3), 0)
+    image2 = cv2.GaussianBlur(image2, (3, 3), 0)
+
+    # Normalization to bring the images into the range [0, 255]
+    image1 = cv2.normalize(image1, None, 0, 255, cv2.NORM_MINMAX)
+    image2 = cv2.normalize(image2, None, 0, 255, cv2.NORM_MINMAX)
+
+    # Convert images to uint8
+    image1 = np.uint8(image1)
+    image2 = np.uint8(image2)
+
+    # Step 1: Compute texture maps using Local Binary Pattern (LBP)
+    texture1 = feature.local_binary_pattern(image1, P=8, R=1, method="uniform")
+    texture2 = feature.local_binary_pattern(image2, P=8, R=1, method="uniform")
+
+    # Convert texture maps to uint8
+    texture1 = np.uint8(texture1)
+    texture2 = np.uint8(texture2)
+
+    # Step 2: Extract high and low variance regions for both textures using Otsu's threshold
+    low_region1, high_region1 = extract_regions_with_otsu(image1,texture1)
+    low_region2, high_region2 = extract_regions_with_otsu(image2,texture2)
+    
+    exclusive_low_region = np.where((low_region1 == 0) & (low_region2 > 0), low_region2, 0)
+    exclusive_high_region = np.where((high_region1 > 0) & (high_region2 == 0), high_region1, 0)
+
+    # Step 3: Calculate histogram correlations
+    hist_image1 = cv2.calcHist([image1], [0], None, [256], [0, 256])
+    hist_image2 = cv2.calcHist([image2], [0], None, [256], [0, 256])
+    hist_low_region1 = cv2.calcHist([low_region1], [0], None, [256], [0, 256])
+    hist_low_region2 = cv2.calcHist([low_region2], [0], None, [256], [0, 256])
+
+    correlation_image_hist = calculate_histogram_correlation(hist_image1.flatten(), hist_image2.flatten())
+    correlation_low_region_hist = calculate_histogram_correlation(hist_low_region1.flatten(), hist_low_region2.flatten())
+
+    # Step 4: Visualization and Results
+    fig, axes = plt.subplots(4, 3, figsize=(16, 11))
+
+    # Plot original images
+    axes[0, 0].imshow(image1, cmap="gray")
+    axes[0, 0].set_title(f"Sizing = {sizing[mydataset1]}")
+
+    axes[0, 1].imshow(image2, cmap="gray")
+    axes[0, 1].set_title(f"Sizing = {sizing[mydataset2]}")
+
+    # Plot histograms of original images on the same plot
+    axes[0, 2].hist(image1.flatten(), bins=256, range=(0, 256), color="blue", alpha=0.7, label="Image 1")
+    axes[0, 2].hist(image2.flatten(), bins=256, range=(0, 256), color="orange", alpha=0.7, label="Image 2")
+    axes[0, 2].set_title(f"Histogram of Image 1 and Image 2 (Correlation: {correlation_image_hist:.4f})")
+    axes[0, 2].legend()
+    
+    # Plot texture maps
+    axes[1, 0].imshow(texture1, cmap="gray")
+    axes[1, 0].set_title("Texture Map of Image 1")
+
+    axes[1, 1].imshow(texture2, cmap="gray")
+    axes[1, 1].set_title("Texture Map of Image 2")
+    
+    # Plot histograms of texture maps on the same plot
+    axes[1, 2].hist(texture1.flatten(), bins=256, range=(0, 12), color="blue", alpha=0.7, label="Image 1")
+    axes[1, 2].hist(texture2.flatten(), bins=256, range=(0, 12), color="orange", alpha=0.7, label="Image 2")
+    axes[1, 2].set_title(f"Histogram of Textures of Image 1 and Image 2 (Correlation: {correlation_image_hist:.4f})")
+    axes[1, 2].legend()
+    
+    # Plot the low and high variance regions for Image 1
+    axes[2, 0].imshow(low_region1, cmap="gray")
+    axes[2, 0].set_title("Biofilm Region Image 1")
+
+    axes[2, 1].imshow(low_region2, cmap="gray")
+    axes[2, 1].set_title("Biofilm Region Image 2")
+    
+    axes[2, 2].imshow(exclusive_low_region, cmap="gray")
+    axes[2, 2].set_title("Diff Biofilm Region (Image 1 over Image 2)")
+    
+    # Plot the low and high variance regions for Image 1
+    axes[3, 0].imshow(high_region1, cmap="gray")
+    axes[3, 0].set_title("Medium Region (Image 1)")
+
+    axes[3, 1].imshow(high_region2, cmap="gray")
+    axes[3, 1].set_title("Medium Region (Image 2)")
+    
+    axes[3, 2].imshow(exclusive_high_region, cmap="gray")
+    axes[3, 2].set_title("Diff Medium Region (Image 2 over Image 1)")
+
+
+    # # Plot histograms of low variance regions
+    # axes[3, 1].hist(low_region1.flatten(), bins=256, range=(0, 256), color="blue", alpha=0.7, label="Low Var Region 1")
+    # axes[3, 1].hist(low_region2.flatten(), bins=256, range=(0, 256), color="orange", alpha=0.7, label="Low Var Region 2")
+    # axes[3, 1].set_title(f"Histogram of Low Variance Regions (Correlation: {correlation_low_region_hist:.4f})")
+    # axes[3, 1].legend()
+
+    plt.tight_layout()
+    plt.show()
+    
+    plt.figure(figsize=(8, 8))
+    plt.scatter(low_region1, low_region2, alpha=0.5, color='blue',label="Biofilm Region")
+    plt.scatter(high_region1, high_region2, alpha=0.5, color='red',label="Medium Region")
+    plt.xlabel("Pixels of Image 1")
+    plt.ylabel("Pixels of Image 2")
+    plt.legend()
+    plt.grid()
+    plt.show()
+    
+    plt.figure(figsize=(8, 8))
+    plt.scatter(exclusive_low_region, low_region1, alpha=0.5, color='blue',label="Biofilm Region")
+    plt.scatter(exclusive_high_region, high_region2, alpha=0.5, color='red',label="Medium Region")
+    plt.xlabel("Pixels of Image 1")
+    plt.ylabel("Pixels of Image 2")
+    plt.legend()
+    plt.grid()
+    plt.show()
+    
+    # image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_175218',
+    #                             mydataset2='Cm_with_offsets_20241128_175752',
+    #                             image1 = image1,
+    #                             image2 = image2,
+    #                             region1 = low_region1,
+    #                             region2 = high_region1)
+
+
+def classify_image(image, K=3, min_region_size=4000):
+    """
+    Classifies a grayscale image into K continuous parts, ensuring small isolated regions 
+    are merged with the surrounding region.
+    
+    Parameters:
+        image (numpy array): Grayscale image (2D NumPy array).
+        K (int): Number of clusters for segmentation (default is 3).
+        min_region_size (int): Minimum size for a region to remain separate.
+        
+    Returns:
+        segmented_image (numpy array): Image with classified continuous regions.
+    """
+    # Ensure the image is in uint8 format
+    image = np.uint8(image)
+
+    # **Step 1: Remove outliers using median filtering**
+    cleaned_image = cv2.medianBlur(image, 3)
+
+    # **Step 2: Apply K-means clustering**
+    Z = cleaned_image.reshape((-1, 1)).astype(np.float32)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    _, labels, centers = cv2.kmeans(Z, K, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+
+    # Reshape labels back to original image size
+    segmented_image = labels.reshape(cleaned_image.shape)
+
+    # **Step 3: Ensure continuous regions using connected component analysis**
+    for k in range(K):
+        mask = (segmented_image == k).astype(np.uint8)  # Binary mask for class k
+        
+        # Label connected components
+        labeled_array, num_features = label(mask)
+
+        # Loop through connected components
+        for i in range(1, num_features + 1):
+            region_size = np.sum(labeled_array == i)
+
+            # If the region is too small, merge it into the largest neighboring region
+            if region_size < min_region_size:
+                # Find the most common surrounding label
+                dilated_mask = cv2.dilate((labeled_array == i).astype(np.uint8), 
+                                          cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5)))
+
+                neighbor_labels = segmented_image[dilated_mask.astype(bool)]
+                most_common_label = np.bincount(neighbor_labels[neighbor_labels != k]).argmax()
+
+                # Reassign the small region to the most common surrounding label
+                segmented_image[labeled_array == i] = most_common_label
+
+    # **Step 4: Apply morphological operations to each class separately**
+    kernel = np.ones((3,3), np.uint8)
+    segmented_image_cleaned = np.zeros_like(segmented_image)
+
+    for k in range(K):
+        region_mask = (segmented_image == k).astype(np.uint8)  # Convert class to binary
+        region_mask = cv2.morphologyEx(region_mask, cv2.MORPH_CLOSE, kernel)  # Apply closing
+        segmented_image_cleaned[region_mask == 1] = k  # Restore class label
+
+    # **Step 5: Color the regions based on their labels (Blue, Red, Green)**
+
+    colored_image = np.zeros((segmented_image_cleaned.shape[0], segmented_image_cleaned.shape[1], 3), dtype=np.uint8)
+
+    # Assign colors: Blue (Region 1), Red (Region 2), Green (Region 3)
+    region_means = []
+    for k in range(K):
+        region_mask = (segmented_image_cleaned == k)
+        region_values = image[region_mask]
+        region_means.append(np.mean(region_values))
+    size = [0]*K
+    for k in range(K):
+        if np.mean(image[segmented_image_cleaned == k]) == max(region_means):  
+            colored_image[segmented_image_cleaned == k] = [255, 0, 0]   # Blue
+            print('Size of Region 1 = %u'%len(colored_image[segmented_image_cleaned == k]))
+            size[0] = len(colored_image[segmented_image_cleaned == k])
+        elif np.mean(image[segmented_image_cleaned == k]) == min(region_means):  
+            colored_image[segmented_image_cleaned == k] = [0, 0, 255]   # Red
+            print('Size of Region 2 = %u'%len(colored_image[segmented_image_cleaned == k]))
+            size[1] = len(colored_image[segmented_image_cleaned == k])
+        else:
+            colored_image[segmented_image_cleaned == k] = [0, 255, 0]   # Green
+
+    # **Step 6: Display results**
+    plt.figure(figsize=(12, 6))
+
+    plt.subplot(1, 2, 1)
+    plot_capacitance_image(plt,     # where to plot
+                           image,  # image (fF)
+                           title='', # title
+                           color_stds=(6,6),) # std color ranges (vmin,vmax)
+
+    plt.subplot(1, 2, 2)
+    plt.title("Segmented Image (Continuous Regions)")
+    plt.imshow(cv2.flip(colored_image, 0))
+    plt.axis('off')
+    
+    plt.show()
+
+    return colored_image,size
+# ------------------------- sizing is the variable for plot -----------------------
+if 0:
+    c_start=200
+    c_end=900
+    r_start=150
+    r_end=720
+    
+    # analysis_list_1 = {'experiments_Nov28_sinR_timelapse_2.h5' : 
+    #                       [
+    #                         'Cm_with_offsets_20250217_210215', 
+    #                         'Cm_with_offsets_20250217_210722', 
+    #                         'Cm_with_offsets_20250217_211229'
+    #                       ]
+    #                   }
+    # plot_virtual_pixel_Cm_sizing(degree=0,
+    #                               offset_scale=1,
+    #                               hist_xlim=[250,450],
+    #                               r_start=r_start,
+    #                               r_end=r_end,
+    #                               c_start=c_start,
+    #                               c_end=c_end)
+    
+    
+    image1 = compensate_offset_cropped_dial (analysis_list_1[fname][2],
+                                        r_start=r_start,
+                                        r_end=r_end,
+                                        c_start=c_start,
+                                        c_end=c_end)
+    
+    image2 = compensate_offset_cropped_dial (analysis_list_1[fname][3],
+                                        r_start=r_start,
+                                        r_end=r_end,
+                                        c_start=c_start,
+                                        c_end=c_end)
+    
+    image3 = compensate_offset_cropped_dial (analysis_list_1[fname][4],
+                                        r_start=r_start,
+                                        r_end=r_end,
+                                        c_start=c_start,
+                                        c_end=c_end)
+    
+    segmented_image_1,size_1 = classify_image(image1, K=2, min_region_size=2000)
+    segmented_image_2,size_2 = classify_image(image2, K=2, min_region_size=2000)
+    segmented_image_3,size_3 = classify_image(image3, K=2, min_region_size=2000)
+    
+    plt.figure(figsize=(8,8))
+    plt.title("Region 2 size (num of pixels)")
+    plt.plot([1,3,9],[size_1[1],size_2[1],size_3[1]])
+    plt.show()
+    
+if 0: 
+    
+    plt.figure(figsize=(8,8))
+    plot_capacitance_image(plt,     # where to plot
+                           image1,  # image (fF)
+                           title='Cm_with_offsets_20250217_210215', # title
+                           color_stds=(6,6),) # std color ranges (vmin,vmax)
+    plt.show()
+    
+    plt.figure(figsize=(8,8))
+    plot_capacitance_image(plt,     # where to plot
+                           image2,  # image (fF)
+                           title='Cm_with_offsets_20250217_210722', # title
+                           color_stds=(6,6),) # std color ranges (vmin,vmax)
+    plt.show()
+    
+    plt.figure(figsize=(8,8))
+    plot_capacitance_image(plt,     # where to plot
+                           image3,  # image (fF)
+                           title='Cm_with_offsets_20250217_211229', # title
+                           color_stds=(6,6),) # std color ranges (vmin,vmax)
+    plt.show()
+
+    
+if 0: 
+    if 0:
+        line_fit(image0.ravel(),image1.ravel(),
+                 'Cm_with_offsets_20241128_174645',
+                 'Cm_with_offsets_20241128_175218')
+        
+        line_fit(image1.ravel(),image2.ravel(),
+                 'Cm_with_offsets_20241128_175218',
+                 'Cm_with_offsets_20241128_175752')
+    
+        line_fit(image2.ravel(),image3.ravel(),
+                 'Cm_with_offsets_20241128_175752',
+                 'Cm_with_offsets_20241128_180326')
+        
+        line_fit(image1.ravel(),image3.ravel(),
+                 'Cm_with_offsets_20241128_175218',
+                 'Cm_with_offsets_20241128_180326')
+    if 0: 
+        plt.figure(figsize=(8,8))
+        plt.hist2d(image0.ravel(),image1.ravel(),bins=120,cmap='plasma')
+        plt.show()
+        
+        plt.figure(figsize=(8,8))
+        plt.hist2d(image1.ravel(),image2.ravel(),bins=120,cmap='plasma')
+        plt.show()
+        
+        plt.figure(figsize=(8,8))
+        plt.hist2d(image2.ravel(),image3.ravel(),bins=120,cmap='plasma')
+        plt.show()
+        
+        plt.figure(figsize=(8,8))
+        plt.hist2d(image1.ravel(),image3.ravel(),bins=120,cmap='plasma')
+        plt.show()
+        
+    if 0: 
+        region_a_0 = extract_region (image=image0,
+                                    min_val=50,
+                                    max_val=55)
+        
+        region_b_0 = extract_region (image=image0,
+                                    min_val=56,
+                                    max_val=72)
+        
+        region_a_1 = extract_region (image=image1,
+                                    min_val=385,
+                                    max_val=400)
+        
+        region_b_1 = extract_region (image=image1,
+                                    min_val=340,
+                                    max_val=365)
+        
+        region_a_2 = extract_region (image=image2,
+                                    min_val=700,
+                                    max_val=750)
+        
+        region_b_2 = extract_region (image=image2,
+                                    min_val=650,
+                                    max_val=680)
+        
+        region_a_3 = extract_region (image=image3,
+                                    min_val=900,
+                                    max_val=940)
+        
+        region_b_3 = extract_region (image=image3,
+                                    min_val=850,
+                                    max_val=880)
+        
+        plot_region_image(image0, region_a_0)
+        
+        plot_region_image(image1, region_a_1)
+        
+        plot_region_image(image1, region_a_2)
+    
+    if 0:#(0,1)
+    
+        # image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_174645',
+        #                             mydataset2='Cm_with_offsets_20241128_175218',
+        #                             image1 = image0,
+        #                             image2 = image1,
+        #                             region1 = region_a_0,
+        #                             region2 = region_b_0)
+    
+        
+    
+        image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_174645',
+                                    mydataset2='Cm_with_offsets_20241128_175218',
+                                    image1 = image0,
+                                    image2 = image1,
+                                    region1 = region_a_1,
+                                    region2 = region_b_1)
+    
+    if 0:#(1,2)
+    
+        # image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_175218',
+        #                             mydataset2='Cm_with_offsets_20241128_175752',
+        #                             image1 = image1,
+        #                             image2 = image2,
+        #                             region1 = region_a_1,
+        #                             region2 = region_b_1)
+        
+    
+        image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_175218',
+                                    mydataset2='Cm_with_offsets_20241128_175752',
+                                    image1 = image1,
+                                    image2 = image2,
+                                    region1 = region_a_2,
+                                    region2 = region_b_2)
+    
+    if 0:#(2,3)
+    
+        # image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_175752',
+        #                             mydataset2='Cm_with_offsets_20241128_180326',
+        #                             image1 = image2,
+        #                             image2 = image3,
+        #                             region1 = region_a_2,
+        #                             region2 = region_b_2)
+        
+    
+        image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_175752',
+                                    mydataset2='Cm_with_offsets_20241128_180326',
+                                    image1 = image2,
+                                    image2 = image3,
+                                    region1 = region_a_3,
+                                    region2 = region_b_3)
+    
+        
+    
+    
+    if 0:#(1,3)
+    
+        # image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_175218',
+        #                             mydataset2='Cm_with_offsets_20241128_180326',
+        #                             image1 = image1,
+        #                             image2 = image3,
+        #                             region1 = region_a_1,
+        #                             region2 = region_b_1)
+    
+        
+    
+        image_correlation_plotting (mydataset1='Cm_with_offsets_20241128_175218',
+                                    mydataset2='Cm_with_offsets_20241128_180326',
+                                    image1 = image1,
+                                    image2 = image3,
+                                    region1 = region_a_3,
+                                    region2 = region_b_3)
+
+    
+
+
+    
+'''
+analysis_list_1 = {'experiments_Nov28_sinR_timelapse_2.h5' : 
+                      [
+                        'Cm_with_offsets_20241128_174645', 
+                        'Cm_with_offsets_20241128_175218', 
+                        'Cm_with_offsets_20241128_175752', 
+                        'Cm_with_offsets_20241128_180326'
+                      ]
+                  }'''
+
+
+if 0:
+    plot_virtual_pixel_Cm_sizing(degree=90,offset_scale=1,hist_xlim=[0,1000])
+# ------------------------- degree is the variable for plot -----------------------
+if 0:
+    plot_virtual_pixel_Cm_degree(offset_scale=1,size=9,hist_xlim=[50,800])
+if 0:
+    plot_virtual_pixel_Cm_degree(offset_scale=2,size=3,hist_xlim=[50,800])
+
+# ------------------------- offset scale is the variable for plot -----------------------
+if 0:
+    plot_virtual_pixel_Cm_offset_scale(degree=0,size=9,hist_xlim=[50,800])
+if 0:
+    plot_virtual_pixel_Cm_offset_scale(degree=90,size=3,hist_xlim=[50,800])
