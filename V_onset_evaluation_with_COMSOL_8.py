@@ -96,11 +96,11 @@ for r_cap in r_cap_list:
     # Bounding logic (uses floor/ceiling logic from previous successful sweep)
     if prev_onset_ray is None:
         v_low = 50 # Using user's floor of 50
-        v_high = 500
+        v_high = 250
     else:
         v_low = 50
         # Ceiling of 700 or 2 times previous onset
-        v_high = max(500, 2 * prev_onset_ray) 
+        v_high = max(250, 2 * prev_onset_ray) 
     
     tol = 1.0
     print(f"--- Bounding brackets: [{v_low:.1f}, {v_high:.1f}] V ---")
