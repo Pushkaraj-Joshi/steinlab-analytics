@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Mar 30 13:57:47 2026
+Created on Mon Apr 13 12:07:36 2026
 
 @author: pjoshi11
 """
-
 
 import os
 import json
@@ -214,7 +213,6 @@ class PlotDashboard:
         self.plot_area_rayleigh = tk.BooleanVar(value=True)
         self.auto_save = tk.BooleanVar(value=True) 
         
-        # Normalization Dropdown
         norm_frame = tk.Frame(f4)
         norm_frame.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 5))
         tk.Label(norm_frame, text="Normalization:").pack(side='left')
@@ -245,6 +243,19 @@ class PlotDashboard:
         tk.Label(margin_frame, text="Plot Width (0.1-0.9):").pack(side='left')
         self.right_margin_var = tk.StringVar(value="0.55")
         tk.Entry(margin_frame, textvariable=self.right_margin_var, width=5).pack(side='left', padx=2)
+
+        # NEW: Partition Option Frame
+        part_frame = tk.Frame(f4)
+        part_frame.grid(row=4, column=0, columnspan=2, sticky='w', pady=(5, 0))
+        self.partition_var = tk.BooleanVar(value=False)
+        self.chk_partition = tk.Checkbutton(part_frame, text="Partition by Angle (Ri > d*tanθ)", variable=self.partition_var, fg="purple")
+        self.chk_partition.pack(side='left')
+        
+        self.lbl_angle = tk.Label(part_frame, text="θ (deg):")
+        self.lbl_angle.pack(side='left', padx=(5, 2))
+        self.partition_angle_var = tk.StringVar(value="40.7")
+        self.entry_angle = tk.Entry(part_frame, textvariable=self.partition_angle_var, width=5)
+        self.entry_angle.pack(side='left')
         
         ttk.Button(self.left_panel, text="Generate Preview & Save", command=self.generate_plot).pack(fill='x', pady=10, ipady=8)
 
@@ -262,6 +273,9 @@ class PlotDashboard:
             self.chk_area.config(state="disabled")
             self.entry_diam.config(state="disabled")
             self.lbl_diam.config(state="disabled")
+            self.chk_partition.config(state="disabled")
+            self.lbl_angle.config(state="disabled")
+            self.entry_angle.config(state="disabled")
         else:
             self.x_axis_cb.config(state="readonly")
             self.chk_rayleigh.config(state="normal")
@@ -269,6 +283,9 @@ class PlotDashboard:
             self.chk_area.config(state="normal")
             self.entry_diam.config(state="normal")
             self.lbl_diam.config(state="normal")
+            self.chk_partition.config(state="normal")
+            self.lbl_angle.config(state="normal")
+            self.entry_angle.config(state="normal")
 
         self.group_listbox.delete(0, tk.END)
         
@@ -303,7 +320,6 @@ class PlotDashboard:
         self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all"))
 
     def _load_meniscus_df(self, row, sheet_type="Meniscus_cap"):
-        """Dynamically loads specified meniscus sheet (cap, cone, or base)."""
         run_name = str(row.get('Run_Name', ''))
         excel_name = row.get('Excel_File', '')
         
@@ -381,9 +397,9 @@ class PlotDashboard:
         
         try:
             right_margin = float(self.right_margin_var.get())
-            if not (0.1 <= right_margin <= 0.95): right_margin = 0.35
+            if not (0.1 <= right_margin <= 0.95): right_margin = 0.55
         except ValueError:
-            right_margin = 0.35
+            right_margin = 0.55
         
         condition = pd.Series(True, index=self.df.index)
         table_consts = [] 
@@ -455,7 +471,6 @@ class PlotDashboard:
                         'color_idx': color_idx, 'max_e': max_e, 'z_center': z_center
                     })
 
-            # Data Collection
             if g_col == "None":
                 df_subset = base_df.head(10) if len(base_df) > 10 else base_df
                 if len(base_df) > 10: messagebox.showwarning("Warning", "Over 10 runs match. Showing first 10.")
@@ -471,7 +486,6 @@ class PlotDashboard:
                         collect_edepth_row(row, f"({g_col}={g_val} {unit})", color_idx)
                         color_idx += 1
 
-            # Normalization
             group_max = max(all_efield_maxes) if all_efield_maxes else 1.0
             if group_max == 0: group_max = 1.0
                 
@@ -575,13 +589,46 @@ class PlotDashboard:
                 elif norm_type == "Group Max":
                     slice_max = group_max
 
+                # Evaluate Partition Condition
+                do_partition = self.partition_var.get() and 'd' in df_slice.columns and 'Ext_elec_R_i' in df_slice.columns
+                if do_partition:
+                    try:
+                        theta_rad = np.radians(float(self.partition_angle_var.get()))
+                        condition_met = df_slice['Ext_elec_R_i'] > df_slice['d'] * np.tan(theta_rad)
+                    except ValueError:
+                        condition_met = pd.Series(True, index=df_slice.index)
+                        do_partition = False
+
+                # Helper nested function to draw continuous and/or partitioned lines
+                def draw_segments(x_key, y_key, marker, base_ls, label_text):
+                    x_data = df_slice[x_key]
+                    y_data = df_slice[y_key] / slice_max
+                    
+                    if do_partition:
+                        if (~condition_met).all():
+                            # All points fall outside the condition
+                            false_ls = ':' if base_ls != ':' else '-.'
+                            self.ax.plot(x_data, y_data, marker=marker, linestyle=false_ls, color=c, alpha=0.4, label=f"{label_text} (Excluded)")
+                        elif condition_met.all():
+                            # All points meet the condition
+                            self.ax.plot(x_data, y_data, marker=marker, linestyle=base_ls, color=c, label=label_text)
+                        else:
+                            # Mixed points: overlay true points over a continuous faint line to prevent a visual gap
+                            false_ls = ':' if base_ls != ':' else '-.'
+                            self.ax.plot(x_data, y_data, marker=marker, linestyle=false_ls, color=c, alpha=0.4, label='_nolegend_')
+                            self.ax.plot(x_data[condition_met], y_data[condition_met], marker=marker, linestyle=base_ls, color=c, label=label_text)
+                    else:
+                        # Normal plotting without partition
+                        self.ax.plot(x_data, y_data, marker=marker, linestyle=base_ls, color=c, label=label_text)
+
+                # Plot curves based on selections
                 if self.plot_rayleigh.get():
-                    self.ax.plot(df_slice[x_col], df_slice['V_onset_rayleigh'] / slice_max, marker='o', linestyle='-', color=c, label=f"Rayleigh {label_suffix}")
+                    draw_segments(x_col, 'V_onset_rayleigh', 'o', '-', f"Rayleigh {label_suffix}")
                 if self.plot_taylor.get():
-                    self.ax.plot(df_slice[x_col], df_slice['V_onset_taylor'] / slice_max, marker='s', linestyle='--', color=c, label=f"Taylor {label_suffix}")
+                    draw_segments(x_col, 'V_onset_taylor', 's', '--', f"Taylor {label_suffix}")
                 if self.plot_area_rayleigh.get() and 'V_onset_area' in df_slice.columns:
                     if not df_slice['V_onset_area'].isna().all():
-                        self.ax.plot(df_slice[x_col], df_slice['V_onset_area'] / slice_max, marker='^', linestyle=':', color=c, label=f"Area Rayleigh (d={target_diam}nm) {label_suffix}")
+                        draw_segments(x_col, 'V_onset_area', '^', ':', f"Area Rayleigh (d={target_diam}nm) {label_suffix}")
 
             if g_col == "None":
                 plot_onset_series(base_df, "", 0)

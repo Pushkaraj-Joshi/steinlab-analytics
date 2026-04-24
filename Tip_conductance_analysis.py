@@ -35,10 +35,10 @@ def calculate_pore_diameter(pore_resistance, solution_conductivity, half_cone_an
 
 #~~~ Provide the base folder where data files are stored
 
-base_dir = r'H:\Shared drives\Stein Lab Team Drive\Pushkaraj\Tip_conductance\Dec_02_2025\Tip_08'
+base_dir = r'H:\Shared drives\Stein Lab Team Drive\Hannah\I-V_measurement\Apr_23_2026\Tip_02'
 
 #~~ Entet solution conductivity in S/m
-solution_conductivity = 10.53e-3/1e-2
+solution_conductivity = 2.96e-3/1e-2
 
 #-- Enter the half cone angle in degree
 half_cone_angle = 2

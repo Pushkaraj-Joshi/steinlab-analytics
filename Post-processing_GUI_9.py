@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Mar 30 13:57:47 2026
+Created on Tue Apr 21 11:48:11 2026
 
 @author: pjoshi11
 """
-
 
 import os
 import json
@@ -20,7 +19,11 @@ from datetime import datetime
 # 1. PHYSICS CONSTANTS & FUNCTIONS
 # ==========================================
 SURFACE_TENSION = 0.0728  # N/m 
-EPSILON_0 = 8.854e-12     # F/m
+EPSILON_0 = 8.85418782e-12# Vacuum permittivity (F/m)
+q = 1.60217663e-19       # Elementary charge (C)
+k_B = 1.380649e-23       # Boltzmann constant (J/K)
+h = 6.62607015e-34       # Planck constant (J*s)
+T = 298.0                # Temperature in Kelvin
 
 def calculate_E_req_rayleigh(row):
     r_meters = row.get('R_cap', 0) * 1e-9 
@@ -51,26 +54,37 @@ def load_data():
     param_units = {}
     
     if master_log:
-        first_params = master_log[0].get('Input_Parameters', {})
-        param_names = list(first_params.keys())
-        for k, v in first_params.items():
-            v_str = str(v)
-            if '[' in v_str and ']' in v_str:
-                param_units[k] = v_str.split('[')[1].split(']')[0]
-            else:
-                param_units[k] = "" 
+        # Scan ALL runs to ensure we catch newly added parameters like 'cap_thick'
+        for entry in master_log:
+            params = entry.get('Input_Parameters', {})
+            for k, v in params.items():
+                if k not in param_names:
+                    param_names.append(k)
+                    
+                # Extract the unit if we haven't already
+                if k not in param_units:
+                    v_str = str(v)
+                    if '[' in v_str and ']' in v_str:
+                        param_units[k] = v_str.split('[')[1].split(']')[0]
+                    else:
+                        param_units[k] = ""
 
     for entry in master_log:
         params = entry.get('Input_Parameters', {})
         results = entry.get('Results', {})
         
         def parse_val(v):
+            if v is None: return np.nan  # <--- THIS IS THE FIX
             try: return float(str(v).split('[')[0].strip())
-            except: return np.nan
+            except: return str(v) # Allow strings to pass through for Geometry_Type
             
         row = {'Run_Name': entry.get('Run_Name')}
         for p in param_names:
-            row[p] = parse_val(params.get(p))
+            val = parse_val(params.get(p))
+            # Clean up bracketed strings if they weren't floats
+            if isinstance(val, str) and '[' in val:
+                val = val.split('[')[0].strip()
+            row[p] = val
             
         row['E_rayleigh_sim'] = results.get('E_rayleigh')
         row['E_taylor_sim'] = results.get('E_taylor')
@@ -90,7 +104,7 @@ def load_data():
     if not df.empty:
         df['E_req_rayleigh'] = df.apply(calculate_E_req_rayleigh, axis=1)
         df['E_req_taylor'] = df.apply(calculate_E_req_taylor, axis=1)
-        v_ext = df['V_ext'] if 'V_ext' in df.columns else 100
+        v_ext = pd.to_numeric(df['V_ext'], errors='coerce').fillna(100) if 'V_ext' in df.columns else 100
         df['V_onset_rayleigh'] = v_ext * (df['E_req_rayleigh'] / df['E_rayleigh_sim'])
         df['V_onset_taylor'] = v_ext * (df['E_req_taylor'] / df['E_taylor_sim'])
 
@@ -143,108 +157,132 @@ class PlotDashboard:
         self.build_ui()
 
     def build_ui(self):
-        # --- 0. Plot Mode Selection ---
-        f0 = tk.LabelFrame(self.left_panel, text="0. Plot Mode", padx=10, pady=5)
-        f0.pack(fill='x', pady=5)
-        
-        self.plot_mode = tk.StringVar(value="Onset Voltage")
-        ttk.Radiobutton(f0, text="Onset Voltage (Phase Space)", variable=self.plot_mode, value="Onset Voltage", command=self.update_dynamic_ui).grid(row=0, column=0, sticky='w')
-        ttk.Radiobutton(f0, text="E-field vs Angle (Meniscus Cap)", variable=self.plot_mode, value="E-field vs Angle", command=self.update_dynamic_ui).grid(row=1, column=0, sticky='w')
-        ttk.Radiobutton(f0, text="E-field vs Depth (Cone + Base)", variable=self.plot_mode, value="E-field vs Depth", command=self.update_dynamic_ui).grid(row=2, column=0, sticky='w')
+        # --- 0. Geometry Selection ---
+        f_geo = tk.LabelFrame(self.left_panel, text="0. Select Geometry", padx=10, pady=5)
+        f_geo.pack(fill='x', pady=5)
 
-        # --- 1. Axis Configuration ---
-        f1 = tk.LabelFrame(self.left_panel, text="1. Axes Configuration", padx=10, pady=10)
+        tk.Label(f_geo, text="Geometry Type:").grid(row=0, column=0, sticky='w')
+        geo_vals = ["All Geometries"] # <--- Added this!
+        if 'Geometry_Type' in self.df.columns:
+            # Append the actual geometries found in the dataframe
+            geo_vals.extend(sorted(self.df['Geometry_Type'].dropna().astype(str).unique()))
+        
+        self.geometry_var = tk.StringVar(value=geo_vals[0])
+        self.geo_cb = ttk.Combobox(f_geo, textvariable=self.geometry_var, values=geo_vals, state="readonly", width=25)
+        self.geo_cb.grid(row=0, column=1, padx=5, pady=2, sticky='w')
+        self.geo_cb.bind("<<ComboboxSelected>>", self.update_dynamic_ui)
+
+        # --- 1. Plot Mode Selection ---
+        f1 = tk.LabelFrame(self.left_panel, text="1. Plot Mode", padx=10, pady=5)
         f1.pack(fill='x', pady=5)
         
-        tk.Label(f1, text="X-Axis Variable:").grid(row=0, column=0, sticky='w')
+        self.plot_mode = tk.StringVar(value="Onset Voltage")
+        ttk.Radiobutton(f1, text="Onset Voltage (Phase Space)", variable=self.plot_mode, value="Onset Voltage", command=self.update_dynamic_ui).grid(row=0, column=0, sticky='w')
+        ttk.Radiobutton(f1, text="Emission Rate vs Angle (Meniscus Cap)", variable=self.plot_mode, value="Emission Rate vs Angle", command=self.update_dynamic_ui).grid(row=1, column=0, sticky='w')
+        ttk.Radiobutton(f1, text="E-field vs Depth (Cone + Base)", variable=self.plot_mode, value="E-field vs Depth", command=self.update_dynamic_ui).grid(row=2, column=0, sticky='w')
+
+        # --- 2. Axis Configuration ---
+        f2 = tk.LabelFrame(self.left_panel, text="2. Axes Configuration", padx=10, pady=10)
+        f2.pack(fill='x', pady=5)
+        
+        tk.Label(f2, text="X-Axis Variable:").grid(row=0, column=0, sticky='w')
         self.x_axis_var = tk.StringVar(value=self.param_names[0])
-        self.x_axis_cb = ttk.Combobox(f1, textvariable=self.x_axis_var, values=self.param_names, state="readonly", width=18)
+        self.x_axis_cb = ttk.Combobox(f2, textvariable=self.x_axis_var, values=self.param_names, state="readonly", width=18)
         self.x_axis_cb.grid(row=0, column=1, columnspan=3, padx=5, pady=2, sticky='w')
         self.x_axis_cb.bind("<<ComboboxSelected>>", self.update_dynamic_ui)
 
-        tk.Label(f1, text="X-Axis Scale:").grid(row=1, column=0, sticky='w')
+        tk.Label(f2, text="X-Axis Scale:").grid(row=1, column=0, sticky='w')
         self.x_scale = tk.StringVar(value="linear")
-        ttk.Combobox(f1, textvariable=self.x_scale, values=["linear", "log"], state="readonly", width=8).grid(row=1, column=1, sticky='w', padx=5, pady=2)
+        ttk.Combobox(f2, textvariable=self.x_scale, values=["linear", "log"], state="readonly", width=8).grid(row=1, column=1, sticky='w', padx=5, pady=2)
 
-        tk.Label(f1, text="Y-Axis Scale:").grid(row=2, column=0, sticky='w')
+        tk.Label(f2, text="Y-Axis Scale:").grid(row=2, column=0, sticky='w')
         self.y_scale = tk.StringVar(value="linear")
-        ttk.Combobox(f1, textvariable=self.y_scale, values=["linear", "log"], state="readonly", width=8).grid(row=2, column=1, sticky='w', padx=5, pady=2)
+        ttk.Combobox(f2, textvariable=self.y_scale, values=["linear", "log"], state="readonly", width=8).grid(row=2, column=1, sticky='w', padx=5, pady=2)
 
-        tk.Label(f1, text="X Limits (min, max):").grid(row=3, column=0, sticky='w', pady=(5,0))
+        tk.Label(f2, text="X Limits (min, max):").grid(row=3, column=0, sticky='w', pady=(5,0))
         self.x_min_var = tk.StringVar()
         self.x_max_var = tk.StringVar()
-        tk.Entry(f1, textvariable=self.x_min_var, width=8).grid(row=3, column=1, padx=2, pady=(5,0))
-        tk.Entry(f1, textvariable=self.x_max_var, width=8).grid(row=3, column=2, padx=2, pady=(5,0))
+        tk.Entry(f2, textvariable=self.x_min_var, width=8).grid(row=3, column=1, padx=2, pady=(5,0))
+        tk.Entry(f2, textvariable=self.x_max_var, width=8).grid(row=3, column=2, padx=2, pady=(5,0))
 
-        tk.Label(f1, text="Y Limits (min, max):").grid(row=4, column=0, sticky='w')
+        tk.Label(f2, text="Y Limits (min, max):").grid(row=4, column=0, sticky='w')
         self.y_min_var = tk.StringVar()
         self.y_max_var = tk.StringVar()
-        tk.Entry(f1, textvariable=self.y_min_var, width=8).grid(row=4, column=1, padx=2)
-        tk.Entry(f1, textvariable=self.y_max_var, width=8).grid(row=4, column=2, padx=2)
+        tk.Entry(f2, textvariable=self.y_min_var, width=8).grid(row=4, column=1, padx=2)
+        tk.Entry(f2, textvariable=self.y_max_var, width=8).grid(row=4, column=2, padx=2)
 
-        # --- 2. Grouping Variable ---
-        f2 = tk.LabelFrame(self.left_panel, text="2. Grouping (Multiple Curves)", padx=10, pady=10)
-        f2.pack(fill='x', pady=5)
+        # --- 3. Grouping Variable ---
+        f3 = tk.LabelFrame(self.left_panel, text="3. Grouping (Multiple Curves)", padx=10, pady=10)
+        f3.pack(fill='x', pady=5)
 
-        tk.Label(f2, text="Trace Separate Lines By:").grid(row=0, column=0, sticky='w')
+        tk.Label(f3, text="Trace Separate Lines By:").grid(row=0, column=0, sticky='w')
         self.group_var = tk.StringVar(value="None")
         group_opts = ["None"] + self.param_names
-        self.group_cb = ttk.Combobox(f2, textvariable=self.group_var, values=group_opts, state="readonly", width=18)
+        self.group_cb = ttk.Combobox(f3, textvariable=self.group_var, values=group_opts, state="readonly", width=18)
         self.group_cb.grid(row=0, column=1, padx=5, pady=2)
         self.group_cb.bind("<<ComboboxSelected>>", self.update_dynamic_ui)
 
-        tk.Label(f2, text="Select Values (Hold Ctrl):").grid(row=1, column=0, sticky='nw', pady=5)
-        self.group_listbox = tk.Listbox(f2, selectmode=tk.MULTIPLE, height=4, exportselection=False)
+        tk.Label(f3, text="Select Values (Hold Ctrl):").grid(row=1, column=0, sticky='nw', pady=5)
+        self.group_listbox = tk.Listbox(f3, selectmode=tk.MULTIPLE, height=4, exportselection=False)
         self.group_listbox.grid(row=1, column=1, sticky='ew', padx=5, pady=5)
         
-        list_scrollbar = ttk.Scrollbar(f2, orient="vertical", command=self.group_listbox.yview)
+        list_scrollbar = ttk.Scrollbar(f3, orient="vertical", command=self.group_listbox.yview)
         list_scrollbar.grid(row=1, column=2, sticky='ns', pady=5)
         self.group_listbox.config(yscrollcommand=list_scrollbar.set)
 
-        # --- 3. Constants (N-2 Parameters) ---
-        self.f3 = tk.LabelFrame(self.left_panel, text="3. Set Constants", padx=10, pady=10)
-        self.f3.pack(fill='x', pady=5)
+        # --- 4. Constants (N-2 Parameters) ---
+        self.f4 = tk.LabelFrame(self.left_panel, text="4. Set Constants", padx=10, pady=10)
+        self.f4.pack(fill='x', pady=5)
         
-        # --- 4. Plot Options & Button ---
-        f4 = tk.LabelFrame(self.left_panel, text="4. Onset & Display Options", padx=10, pady=10)
-        f4.pack(fill='x', pady=10)
+        # --- 5. Plot Options & Button ---
+        f5 = tk.LabelFrame(self.left_panel, text="5. Onset & Display Options", padx=10, pady=10)
+        f5.pack(fill='x', pady=10)
         
         self.plot_rayleigh = tk.BooleanVar(value=True)
         self.plot_taylor = tk.BooleanVar(value=True)
-        self.plot_area_rayleigh = tk.BooleanVar(value=True)
         self.auto_save = tk.BooleanVar(value=True) 
         
-        # Normalization Dropdown
-        norm_frame = tk.Frame(f4)
+        norm_frame = tk.Frame(f5)
         norm_frame.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 5))
         tk.Label(norm_frame, text="Normalization:").pack(side='left')
         self.normalize_var = tk.StringVar(value="None")
         ttk.Combobox(norm_frame, textvariable=self.normalize_var, values=["None", "Group Max", "Individual Curve Max"], state="readonly", width=18).pack(side='left', padx=5)
         
-        self.chk_rayleigh = tk.Checkbutton(f4, text="Plot Rayleigh", variable=self.plot_rayleigh)
+        self.chk_rayleigh = tk.Checkbutton(f5, text="Plot Rayleigh", variable=self.plot_rayleigh)
         self.chk_rayleigh.grid(row=1, column=0, sticky='w')
         
-        self.chk_taylor = tk.Checkbutton(f4, text="Plot Taylor Limit", variable=self.plot_taylor)
+        self.chk_taylor = tk.Checkbutton(f5, text="Plot Taylor Limit", variable=self.plot_taylor)
         self.chk_taylor.grid(row=2, column=0, sticky='w')
         
-        self.chk_area = tk.Checkbutton(f4, text="Plot Area-Based Rayleigh", variable=self.plot_area_rayleigh)
-        self.chk_area.grid(row=1, column=1, sticky='w', padx=5)
-        
-        diam_frame = tk.Frame(f4)
-        diam_frame.grid(row=2, column=1, sticky='w', padx=5)
-        self.lbl_diam = tk.Label(diam_frame, text="Target Diam (nm):")
-        self.lbl_diam.pack(side='left')
-        self.ion_diameter_var = tk.StringVar(value="0.5")
-        self.entry_diam = tk.Entry(diam_frame, textvariable=self.ion_diameter_var, width=5)
-        self.entry_diam.pack(side='left', padx=(2, 5))
+        tk.Checkbutton(f5, text="Auto-Save as PDF", variable=self.auto_save, fg="blue").grid(row=3, column=0, sticky='w', pady=5)
 
-        tk.Checkbutton(f4, text="Auto-Save as PDF", variable=self.auto_save, fg="blue").grid(row=3, column=0, sticky='w', pady=5)
-
-        margin_frame = tk.Frame(f4)
+        margin_frame = tk.Frame(f5)
         margin_frame.grid(row=3, column=1, sticky='w', padx=5)
         tk.Label(margin_frame, text="Plot Width (0.1-0.9):").pack(side='left')
-        self.right_margin_var = tk.StringVar(value="0.55")
+        self.right_margin_var = tk.StringVar(value="0.85")
         tk.Entry(margin_frame, textvariable=self.right_margin_var, width=5).pack(side='left', padx=2)
+
+        # Partition Option Frame
+        part_frame = tk.Frame(f5)
+        part_frame.grid(row=4, column=0, columnspan=2, sticky='w', pady=(5, 0))
+        self.partition_var = tk.BooleanVar(value=False)
+        self.chk_partition = tk.Checkbutton(part_frame, text="Partition by Angle (Ri > d*tanθ)", variable=self.partition_var, fg="purple")
+        self.chk_partition.pack(side='left')
+        
+        self.lbl_angle = tk.Label(part_frame, text="θ (deg):")
+        self.lbl_angle.pack(side='left', padx=(5, 2))
+        self.partition_angle_var = tk.StringVar(value="40.7")
+        self.entry_angle = tk.Entry(part_frame, textvariable=self.partition_angle_var, width=5)
+        self.entry_angle.pack(side='left')
+
+        # G0 (Activation Energy) Input Frame
+        g0_frame = tk.Frame(f5)
+        g0_frame.grid(row=5, column=0, columnspan=2, sticky='w', pady=(5, 0))
+        self.lbl_g0 = tk.Label(g0_frame, text="G0 Activation Energy (eV):")
+        self.lbl_g0.pack(side='left')
+        self.g0_var = tk.StringVar(value="1.5")
+        self.entry_g0 = tk.Entry(g0_frame, textvariable=self.g0_var, width=5)
+        self.entry_g0.pack(side='left', padx=5)
         
         ttk.Button(self.left_panel, text="Generate Preview & Save", command=self.generate_plot).pack(fill='x', pady=10, ipady=8)
 
@@ -255,47 +293,83 @@ class PlotDashboard:
         x_col = self.x_axis_var.get()
         g_col = self.group_var.get()
 
-        if mode in ["E-field vs Angle", "E-field vs Depth"]:
+        if mode in ["Emission Rate vs Angle", "E-field vs Depth"]:
             self.x_axis_cb.config(state="disabled")
             self.chk_rayleigh.config(state="disabled")
             self.chk_taylor.config(state="disabled")
-            self.chk_area.config(state="disabled")
-            self.entry_diam.config(state="disabled")
-            self.lbl_diam.config(state="disabled")
+            self.chk_partition.config(state="disabled")
+            self.lbl_angle.config(state="disabled")
+            self.entry_angle.config(state="disabled")
+            
+            # Enable G0 only for Emission Rate plot
+            if mode == "Emission Rate vs Angle":
+                self.lbl_g0.config(state="normal")
+                self.entry_g0.config(state="normal")
+            else:
+                self.lbl_g0.config(state="disabled")
+                self.entry_g0.config(state="disabled")
         else:
             self.x_axis_cb.config(state="readonly")
             self.chk_rayleigh.config(state="normal")
             self.chk_taylor.config(state="normal")
-            self.chk_area.config(state="normal")
-            self.entry_diam.config(state="normal")
-            self.lbl_diam.config(state="normal")
+            self.chk_partition.config(state="normal")
+            self.lbl_angle.config(state="normal")
+            self.entry_angle.config(state="normal")
+            
+            self.lbl_g0.config(state="disabled")
+            self.entry_g0.config(state="disabled")
 
-        self.group_listbox.delete(0, tk.END)
+        # FILTER GEOMETRY FIRST
+        geo_filter = self.geometry_var.get()
+        if 'Geometry_Type' in self.df.columns and geo_filter not in ["All Geometries", "Unknown"]:
+            filtered_df = self.df[self.df['Geometry_Type'] == geo_filter]
+            
+            # If a specific geometry is selected, we shouldn't be able to group by Geometry
+            group_opts = ["None"] + [p for p in self.param_names if p not in ["COMSOL_File", "Geometry_Type"]]
+        else:
+            filtered_df = self.df
+            
+            # If "All Geometries" is selected, ALLOW grouping by Geometry
+            group_opts = ["None"] + [p for p in self.param_names if p != "COMSOL_File"]
+            if "Geometry_Type" not in group_opts:
+                group_opts.append("Geometry_Type")
+                
+        # Dynamically update the grouping dropdown options
+        self.group_cb.config(values=group_opts)
+        
+        if g_col not in group_opts:
+            self.group_var.set("None")
+            g_col = "None"
         
         if g_col != "None":
             if mode == "Onset Voltage" and g_col == x_col:
                 messagebox.showwarning("Logic Error", "Grouping variable cannot be the same as the X-Axis.")
                 self.group_var.set("None")
             else:
-                unique_vals = sorted(self.df[g_col].dropna().unique())
+                unique_vals = sorted(filtered_df[g_col].dropna().unique())
                 for val in unique_vals:
                     self.group_listbox.insert(tk.END, str(val))
 
-        for widget in self.f3.winfo_children():
+        for widget in self.f4.winfo_children():
             widget.destroy()
             
         self.constant_vars.clear()
         
         row_idx = 0
         for p in self.param_names:
-            if p == g_col or (mode == "Onset Voltage" and p == x_col):
+            if p == g_col or (mode == "Onset Voltage" and p == x_col) or p == "Geometry_Type" or p == "COMSOL_File":
                 continue 
                 
-            tk.Label(self.f3, text=p, width=15, anchor='w').grid(row=row_idx, column=0, pady=2, sticky='w')
-            unique_vals_str = [str(val) for val in sorted(self.df[p].dropna().unique())]
+            # Grab unique values only from the Geometry-filtered dataframe
+            unique_vals = sorted(filtered_df[p].dropna().unique())
+            if not unique_vals: # Skip parameters that don't exist for this geometry
+                continue
+                
+            tk.Label(self.f4, text=p, width=15, anchor='w').grid(row=row_idx, column=0, pady=2, sticky='w')
+            unique_vals_str = [str(val) for val in unique_vals]
             
             var = tk.StringVar(value=unique_vals_str[0] if unique_vals_str else "")
-            ttk.Combobox(self.f3, textvariable=var, values=unique_vals_str, state="readonly", width=15).grid(row=row_idx, column=1, sticky='ew')
+            ttk.Combobox(self.f4, textvariable=var, values=unique_vals_str, state="readonly", width=15).grid(row=row_idx, column=1, sticky='ew')
             self.constant_vars[p] = var
             row_idx += 1
             
@@ -303,7 +377,6 @@ class PlotDashboard:
         self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all"))
 
     def _load_meniscus_df(self, row, sheet_type="Meniscus_cap"):
-        """Dynamically loads specified meniscus sheet (cap, cone, or base)."""
         run_name = str(row.get('Run_Name', ''))
         excel_name = row.get('Excel_File', '')
         
@@ -334,63 +407,35 @@ class PlotDashboard:
         except Exception as e:
             return None
 
-    def calc_area_onset(self, row, target_radius_nm):
-        df_meniscus = self._load_meniscus_df(row, "Meniscus_cap")
-        if df_meniscus is None: return np.nan
-
-        try:
-            angle_col = [c for c in df_meniscus.columns if 'angle' in str(c).lower() or 'theta' in str(c).lower()]
-            e_col = [c for c in df_meniscus.columns if 'e' in str(c).lower() and ('field' in str(c).lower() or 'norm' in str(c).lower())]
-            
-            angles = df_meniscus[angle_col[0]].values if angle_col else df_meniscus.iloc[:, 0].values
-            e_fields = df_meniscus[e_col[0]].values if e_col else df_meniscus.iloc[:, 1].values
-            
-            if np.max(np.abs(angles)) > 7: angles = np.deg2rad(angles)
-                
-            r_cap_nm = float(row.get('R_cap', 0))
-            if pd.isna(r_cap_nm) or r_cap_nm <= 0: return np.nan
-            
-            r_arr = r_cap_nm * np.abs(np.sin(angles))
-            sort_idx = np.argsort(r_arr)
-            r_arr = r_arr[sort_idx]
-            e_fields = e_fields[sort_idx]
-            
-            r_arr, unique_idx = np.unique(r_arr, return_index=True)
-            e_fields = e_fields[unique_idx]
-            
-            e_interp = np.interp(target_radius_nm, r_arr, e_fields)
-            if e_interp <= 0: return np.nan
-            
-            v_ext = float(row.get('V_ext', 100))
-            e_req = float(row.get('E_req_rayleigh', 0))
-            if e_req <= 0: return np.nan
-            
-            return v_ext * (e_req / e_interp)
-        except Exception:
-            return np.nan
-
     def generate_plot(self):
         mode = self.plot_mode.get()
         x_col = self.x_axis_var.get()
         g_col = self.group_var.get()
         norm_type = self.normalize_var.get()
-        
-        try: target_diam = float(self.ion_diameter_var.get())
-        except ValueError: target_diam = 0.5
-        target_radius_nm = target_diam / 2.0
+        geo_filter = self.geometry_var.get()
         
         try:
             right_margin = float(self.right_margin_var.get())
-            if not (0.1 <= right_margin <= 0.95): right_margin = 0.35
+            if not (0.1 <= right_margin <= 0.95): right_margin = 0.85
         except ValueError:
-            right_margin = 0.35
+            right_margin = 0.85
+            
+        try: G0_eV = float(self.g0_var.get())
+        except ValueError: G0_eV = 1.5
         
+        # Start condition with Geometry (Ignore if "All Geometries")
         condition = pd.Series(True, index=self.df.index)
+        if 'Geometry_Type' in self.df.columns and geo_filter not in ["All Geometries", "Unknown"]:
+            condition &= (self.df['Geometry_Type'] == geo_filter)
+            
         table_consts = [] 
         file_consts = []  
         
         for p, var in self.constant_vars.items():
-            val = float(var.get())
+            try:
+                val = float(var.get())
+            except ValueError:
+                val = var.get()
             condition &= (self.df[p] == val)
             unit = self.param_units.get(p, "")
             unit_str = f" [{unit}]" if unit else ""
@@ -409,7 +454,14 @@ class PlotDashboard:
             if not selected_indices:
                 messagebox.showwarning("Selection Required", f"Please select at least one value for {g_col}.")
                 return
-            selected_groups = [float(self.group_listbox.get(i)) for i in selected_indices]
+            
+            # Safely handle both numbers and strings (like Geometry Types)
+            for i in selected_indices:
+                val_str = self.group_listbox.get(i)
+                try:
+                    selected_groups.append(float(val_str))
+                except ValueError:
+                    selected_groups.append(val_str)
 
         self.fig.clear()
         self.ax = self.fig.add_subplot(111)
@@ -455,7 +507,6 @@ class PlotDashboard:
                         'color_idx': color_idx, 'max_e': max_e, 'z_center': z_center
                     })
 
-            # Data Collection
             if g_col == "None":
                 df_subset = base_df.head(10) if len(base_df) > 10 else base_df
                 if len(base_df) > 10: messagebox.showwarning("Warning", "Over 10 runs match. Showing first 10.")
@@ -471,7 +522,6 @@ class PlotDashboard:
                         collect_edepth_row(row, f"({g_col}={g_val} {unit})", color_idx)
                         color_idx += 1
 
-            # Normalization
             group_max = max(all_efield_maxes) if all_efield_maxes else 1.0
             if group_max == 0: group_max = 1.0
                 
@@ -491,13 +541,13 @@ class PlotDashboard:
             safe_x = "Depth_Z"
 
         # ========================================================
-        # PLOT MODE: E-FIELD VS ANGLE (CAP)
+        # PLOT MODE: EMISSION RATE VS ANGLE (CAP)
         # ========================================================
-        elif mode == "E-field vs Angle":
+        elif mode == "Emission Rate vs Angle":
             plot_items = []
-            all_efield_maxes = []
+            all_emission_maxes = []
             
-            def collect_efield_row(row, label_suffix, color_idx):
+            def collect_emission_row(row, label_suffix, color_idx):
                 df_meniscus = self._load_meniscus_df(row, "Meniscus_cap")
                 if df_meniscus is not None:
                     angle_col = [c for c in df_meniscus.columns if 'angle' in str(c).lower() or 'theta' in str(c).lower()]
@@ -506,15 +556,32 @@ class PlotDashboard:
                     angles = df_meniscus[angle_col[0]].values if angle_col else df_meniscus.iloc[:, 0].values
                     e_fields = df_meniscus[e_col[0]].values if e_col else df_meniscus.iloc[:, 1].values
 
-                    max_e = np.max(e_fields)
-                    all_efield_maxes.append(max_e)
-                    plot_items.append({'angles': angles, 'e_fields': e_fields, 'label': f"E-field {label_suffix}", 'color_idx': color_idx, 'max_e': max_e})
+                    e_fields_abs = np.abs(e_fields)
+                    
+                    pre_factor = EPSILON_0 * e_fields_abs * (k_B * T) / h
+                    barrier_lowering = np.sqrt((q**3 * e_fields_abs) / (4 * np.pi * EPSILON_0))
+                    
+                    G0_J = G0_eV * q
+                    exponent = - (G0_J - barrier_lowering) / (k_B * T)
+                    
+                    j_emission = pre_factor * np.exp(exponent)
+                    
+                    j_max = np.max(j_emission)
+                    all_emission_maxes.append(j_max)
+
+                    plot_items.append({
+                        'angles': angles, 
+                        'e_fields': j_emission,  
+                        'label': f"Emission {label_suffix}", 
+                        'color_idx': color_idx, 
+                        'max_e': j_max
+                    })
             
             if g_col == "None":
                 df_subset = base_df.head(10) if len(base_df) > 10 else base_df
                 if len(base_df) > 10: messagebox.showwarning("Warning", "Over 10 runs match. Showing first 10.")
                 for idx, (_, row) in enumerate(df_subset.iterrows()):
-                    collect_efield_row(row, f"Run {str(row['Run_Name'])[-4:]}", idx)
+                    collect_emission_row(row, f"Run {str(row['Run_Name'])[-4:]}", idx)
             else:
                 color_idx = 0
                 for g_val in selected_groups:
@@ -522,38 +589,37 @@ class PlotDashboard:
                     if not g_df.empty:
                         row = g_df.iloc[0]
                         unit = self.param_units.get(g_col, "")
-                        collect_efield_row(row, f"({g_col}={g_val} {unit})", color_idx)
+                        collect_emission_row(row, f"({g_col}={g_val} {unit})", color_idx)
                         color_idx += 1
 
-            group_max = max(all_efield_maxes) if all_efield_maxes else 1.0
+            group_max = max(all_emission_maxes) if all_emission_maxes else 1.0
             if group_max == 0: group_max = 1.0
                 
             for item in plot_items:
                 c = colors[item['color_idx'] % len(colors)]
                 e_plot = item['e_fields']
-                if norm_type == "Group Max": e_plot = e_plot / group_max
-                elif norm_type == "Individual Curve Max": e_plot = e_plot / item['max_e'] if item['max_e'] != 0 else e_plot
+                
+                if norm_type == "Group Max": 
+                    e_plot = e_plot / group_max
+                elif norm_type == "Individual Curve Max": 
+                    e_plot = e_plot / item['max_e'] if item['max_e'] != 0 else e_plot
                 
                 self.ax.plot(item['angles'], e_plot, linestyle='-', color=c, label=item['label'])
 
-            self.ax.set_title("Electric Field vs Meniscus Angle", fontsize=12, pad=15)
+            self.ax.set_title("Emission Rate vs Meniscus Angle", fontsize=12, pad=15)
             self.ax.set_xlabel("Angle (deg)")
-            self.ax.set_ylabel("Normalized Electric Field" if norm_type != "None" else "Electric Field (V/m)")
+            self.ax.set_ylabel("Normalized Emission Rate" if norm_type != "None" else "Emission Rate ($m^{-2}s^{-1}$)")
             safe_x = "Angle"
 
         # ========================================================
         # PLOT MODE: ONSET VOLTAGE (PHASE SPACE)
         # ========================================================
         else:
-            if self.plot_area_rayleigh.get():
-                base_df['V_onset_area'] = base_df.apply(lambda row: self.calc_area_onset(row, target_radius_nm), axis=1)
-
             group_max = 1.0
             if norm_type == "Group Max":
                 active_cols = []
                 if self.plot_rayleigh.get() and 'V_onset_rayleigh' in base_df.columns: active_cols.append('V_onset_rayleigh')
                 if self.plot_taylor.get() and 'V_onset_taylor' in base_df.columns: active_cols.append('V_onset_taylor')
-                if self.plot_area_rayleigh.get() and 'V_onset_area' in base_df.columns: active_cols.append('V_onset_area')
                 
                 if active_cols:
                     group_max = base_df[active_cols].max().max()
@@ -568,20 +634,42 @@ class PlotDashboard:
                     active_slice_cols = []
                     if self.plot_rayleigh.get() and 'V_onset_rayleigh' in df_slice.columns: active_slice_cols.append('V_onset_rayleigh')
                     if self.plot_taylor.get() and 'V_onset_taylor' in df_slice.columns: active_slice_cols.append('V_onset_taylor')
-                    if self.plot_area_rayleigh.get() and 'V_onset_area' in df_slice.columns: active_slice_cols.append('V_onset_area')
                     if active_slice_cols:
                         slice_max = df_slice[active_slice_cols].max().max()
                         if pd.isna(slice_max) or slice_max == 0: slice_max = 1.0
                 elif norm_type == "Group Max":
                     slice_max = group_max
 
+                do_partition = self.partition_var.get() and 'd' in df_slice.columns and 'Ext_elec_R_i' in df_slice.columns
+                if do_partition:
+                    try:
+                        theta_rad = np.radians(float(self.partition_angle_var.get()))
+                        condition_met = df_slice['Ext_elec_R_i'] > df_slice['d'] * np.tan(theta_rad)
+                    except ValueError:
+                        condition_met = pd.Series(True, index=df_slice.index)
+                        do_partition = False
+
+                def draw_segments(x_key, y_key, marker, base_ls, label_text):
+                    x_data = df_slice[x_key]
+                    y_data = df_slice[y_key] / slice_max
+                    
+                    if do_partition:
+                        if (~condition_met).all():
+                            false_ls = ':' if base_ls != ':' else '-.'
+                            self.ax.plot(x_data, y_data, marker=marker, linestyle=false_ls, color=c, alpha=0.4, label=f"{label_text} (Excluded)")
+                        elif condition_met.all():
+                            self.ax.plot(x_data, y_data, marker=marker, linestyle=base_ls, color=c, label=label_text)
+                        else:
+                            false_ls = ':' if base_ls != ':' else '-.'
+                            self.ax.plot(x_data, y_data, marker=marker, linestyle=false_ls, color=c, alpha=0.4, label='_nolegend_')
+                            self.ax.plot(x_data[condition_met], y_data[condition_met], marker=marker, linestyle=base_ls, color=c, label=label_text)
+                    else:
+                        self.ax.plot(x_data, y_data, marker=marker, linestyle=base_ls, color=c, label=label_text)
+
                 if self.plot_rayleigh.get():
-                    self.ax.plot(df_slice[x_col], df_slice['V_onset_rayleigh'] / slice_max, marker='o', linestyle='-', color=c, label=f"Rayleigh {label_suffix}")
+                    draw_segments(x_col, 'V_onset_rayleigh', 'o', '-', f"Rayleigh {label_suffix}")
                 if self.plot_taylor.get():
-                    self.ax.plot(df_slice[x_col], df_slice['V_onset_taylor'] / slice_max, marker='s', linestyle='--', color=c, label=f"Taylor {label_suffix}")
-                if self.plot_area_rayleigh.get() and 'V_onset_area' in df_slice.columns:
-                    if not df_slice['V_onset_area'].isna().all():
-                        self.ax.plot(df_slice[x_col], df_slice['V_onset_area'] / slice_max, marker='^', linestyle=':', color=c, label=f"Area Rayleigh (d={target_diam}nm) {label_suffix}")
+                    draw_segments(x_col, 'V_onset_taylor', 's', '--', f"Taylor {label_suffix}")
 
             if g_col == "None":
                 plot_onset_series(base_df, "", 0)
@@ -602,7 +690,7 @@ class PlotDashboard:
             safe_x = x_col.replace("/", "_")
 
         # --- FINAL FORMATTING ---
-        self.ax.set_xscale("linear" if mode in ["E-field vs Angle", "E-field vs Depth"] else self.x_scale.get())
+        self.ax.set_xscale("linear" if mode in ["Emission Rate vs Angle", "E-field vs Depth"] else self.x_scale.get())
         self.ax.set_yscale(self.y_scale.get())
         self.ax.grid(True, which="both", linestyle='--', alpha=0.5)
 
@@ -627,7 +715,7 @@ class PlotDashboard:
             safe_g = g_col if g_col != "None" else "NoGroup"
             const_str = "_".join(file_consts)
             if len(const_str) > 80: const_str = const_str[:80] + "_etc"
-            prefix = "EDepth_vs" if mode == "E-field vs Depth" else ("EAngle_vs" if mode == "E-field vs Angle" else "Onset_vs")
+            prefix = "EDepth_vs" if mode == "E-field vs Depth" else ("Emission_vs" if mode == "Emission Rate vs Angle" else "Onset_vs")
             timestamp = datetime.now().strftime("%H%M%S")
             filename = f"{prefix}_{safe_x}_Grp_{safe_g}_{const_str}_{timestamp}.pdf"
             filepath = os.path.join(save_dir, filename)
